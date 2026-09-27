@@ -1,6 +1,6 @@
 """
-에피소드 뷰어 + 삭제 도구
-영상은 창으로 보고, 조작은 터미널에서 입력
+Episode viewer + deletion tool.
+Videos play in an OpenCV window; commands are entered in the terminal.
 """
 import cv2
 import os
@@ -59,7 +59,7 @@ def extract_clip(ep_info, cam, tmp_dir):
 
 
 def play_episode(clip_up, clip_side, ep_idx, total, to_delete):
-    """메인 스레드에서 영상 재생, 별도 스레드에서 터미널 입력 대기"""
+    """Play video on the main thread; wait for terminal input on a worker thread."""
     import queue as q_module
 
     cap_up   = cv2.VideoCapture(clip_up)
@@ -70,8 +70,8 @@ def play_episode(clip_up, clip_side, ep_idx, total, to_delete):
     cmd_queue = q_module.Queue()
 
     def input_worker():
-        print(f"\n  EP {ep_idx:03d}/{total-1:03d}  {'★삭제예정★' if ep_idx in to_delete else ''}")
-        print("  [엔터]다음  [b]이전  [d]삭제표시  [r]재생  [q]종료 > ", end="", flush=True)
+        print(f"\n  EP {ep_idx:03d}/{total-1:03d}  {'*MARKED FOR DELETION*' if ep_idx in to_delete else ''}")
+        print("  [Enter] next  [b] back  [d] mark delete  [r] replay  [q] quit > ", end="", flush=True)
         try:
             cmd = input().strip().lower()
         except EOFError:
@@ -85,9 +85,9 @@ def play_episode(clip_up, clip_side, ep_idx, total, to_delete):
     video_ended = False
     cmd = None
 
-    # 메인 스레드에서 imshow + waitKey
+    # imshow + waitKey on the main thread
     while True:
-        # 커맨드 들어왔으면 즉시 종료
+        # stop immediately once a command arrives
         try:
             cmd = cmd_queue.get_nowait()
             break
@@ -124,25 +124,25 @@ def draw_overlay(frame, ep_idx, total, to_delete, end=False):
     h, w = frame.shape[:2]
     is_del = ep_idx in to_delete
     color = (0, 0, 255) if is_del else (0, 255, 100)
-    status = "  ★ 삭제 예정 ★" if is_del else ""
+    status = "  * MARKED FOR DELETION *" if is_del else ""
     cv2.rectangle(frame, (0, 0), (w, 50), (0, 0, 0), -1)
     cv2.putText(frame, f"EP {ep_idx:03d} / {total-1:03d}{status}",
                 (10, 38), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
     del_list = sorted(to_delete)
     if del_list:
-        txt = "삭제: " + ", ".join(str(x) for x in del_list[:20])
+        txt = "delete: " + ", ".join(str(x) for x in del_list[:20])
         cv2.putText(frame, txt, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 120, 255), 1)
     if end:
         cv2.rectangle(frame, (0, h-30), (w, h), (0, 0, 0), -1)
-        cv2.putText(frame, "<<재생끝>> 터미널에서 명령 입력",
+        cv2.putText(frame, "<<END>> enter a command in the terminal",
                     (10, h-8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1)
 
 
 def main():
     all_eps = load_all_episodes()
     total = len(all_eps)
-    print(f"\n총 {total}개 에피소드")
-    print("명령: [엔터] 다음  [b] 이전  [d] 삭제표시/해제  [r] 다시보기  [q] 종료\n")
+    print(f"\n{total} episodes total")
+    print("Commands: [Enter] next  [b] back  [d] toggle delete mark  [r] replay  [q] quit\n")
 
     tmp_dir = tempfile.mkdtemp()
     clip_cache = {}
@@ -150,7 +150,7 @@ def main():
     def get_clips(ep):
         idx = ep["ep_idx"]
         if idx not in clip_cache:
-            print(f"  클립 추출 중: EP {idx:03d}...", flush=True)
+            print(f"  extracting clip: EP {idx:03d}...", flush=True)
             cup   = extract_clip(ep, "observation.images.up",   tmp_dir)
             cside = extract_clip(ep, "observation.images.side", tmp_dir)
             clip_cache[idx] = (cup, cside)
@@ -159,14 +159,14 @@ def main():
     to_delete = set()
     i = 0
 
-    # 첫 에피소드 미리 추출
+    # pre-extract the first episode
     get_clips(all_eps[0])
 
     while 0 <= i < total:
         ep = all_eps[i]
         clip_up, clip_side = get_clips(ep)
 
-        # 다음 에피소드 백그라운드 추출
+        # extract the next episode in the background
         if i + 1 < total:
             next_ep = all_eps[i + 1]
             if next_ep["ep_idx"] not in clip_cache:
@@ -184,12 +184,12 @@ def main():
             ep_idx = ep["ep_idx"]
             if ep_idx in to_delete:
                 to_delete.discard(ep_idx)
-                print(f"  → 삭제 취소: EP {ep_idx:03d}  현재 삭제 예정: {sorted(to_delete)}")
+                print(f"  -> unmarked: EP {ep_idx:03d}  marked for deletion: {sorted(to_delete)}")
             else:
                 to_delete.add(ep_idx)
-                print(f"  → 삭제 추가: EP {ep_idx:03d}  현재 삭제 예정: {sorted(to_delete)}")
+                print(f"  -> marked: EP {ep_idx:03d}  marked for deletion: {sorted(to_delete)}")
         elif cmd == "r":
-            pass  # 같은 에피소드 재생
+            pass  # replay the same episode
         elif cmd == "q":
             break
 
@@ -199,14 +199,14 @@ def main():
 
     print("\n" + "=" * 50)
     if to_delete:
-        print(f"삭제 예정: {sorted(to_delete)}")
-        confirm = input("정말 삭제할까요? (y/N): ").strip().lower()
+        print(f"marked for deletion: {sorted(to_delete)}")
+        confirm = input("Really delete? (y/N): ").strip().lower()
         if confirm == "y":
             delete_episodes(sorted(to_delete))
         else:
-            print("취소됨.")
+            print("Cancelled.")
     else:
-        print("삭제할 에피소드 없음.")
+        print("No episodes to delete.")
 
 
 def delete_episodes(ep_indices_to_delete):
@@ -219,8 +219,8 @@ def delete_episodes(ep_indices_to_delete):
     keep_eps = [ep for ep in all_eps if ep["ep_idx"] not in del_set]
     new_ep_map = {ep["ep_idx"]: new_i for new_i, ep in enumerate(keep_eps)}
 
-    print(f"\n삭제: {sorted(del_set)}")
-    print(f"{len(all_eps)}개 → {len(keep_eps)}개")
+    print(f"\ndeleting: {sorted(del_set)}")
+    print(f"{len(all_eps)} -> {len(keep_eps)} episodes")
 
     tmp_dir = tempfile.mkdtemp()
 
@@ -251,7 +251,7 @@ def delete_episodes(ep_indices_to_delete):
             "-f", "concat", "-safe", "0", "-i", list_f,
             "-c", "copy", os.path.join(vid_dir, "file-000.mp4")
         ], check=True)
-        print(f"  영상 재구성: {cam}")
+        print(f"  rebuilding video: {cam}")
 
     # data parquet
     data_files = sorted(glob.glob(os.path.join(DATASET_ROOT, "data/**/*.parquet"), recursive=True))
@@ -311,7 +311,7 @@ def delete_episodes(ep_indices_to_delete):
         json.dump(info, f, indent=2)
 
     shutil.rmtree(tmp_dir)
-    print(f"\n완료! 총 {len(keep_eps)}개 에피소드")
+    print(f"\nDone. {len(keep_eps)} episodes total")
 
 
 if __name__ == "__main__":

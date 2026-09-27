@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-실제 SO101 로봇에서 SmolVLA 정책을 실행하는 스크립트
-카메라 0, 1 동시 미리보기 + SmolVLA 추론
+Run a SmolVLA policy on a real SO-101 follower arm.
+Live preview of cameras 0 and 1 + SmolVLA inference.
 
-POLICY_PATH 옵션:
-  - "lerobot/smolvla_base"                                               : HF base 모델 (SO-100 데이터 기반)
-  - "outputs/train/toothpaste_smolvla_v2/checkpoints/last/pretrained_model" : 우리가 학습한 모델
+POLICY_PATH options:
+  - "lerobot/smolvla_base"                                                 : HF base model (SO-100 data)
+  - "outputs/train/toothpaste_from_20k/checkpoints/last/pretrained_model"  : the fine-tuned model from this repo
 """
 import sys
 sys.path.insert(0, "src")
@@ -17,30 +17,31 @@ import cv2
 import torch
 import numpy as np
 
-# ─── 모델 선택 ────────────────────────────────────────────────────────────────
-# chamborgir/smolvla_pickplace_20k 기반 + toothpaste_grasp (51 ep) 30K step LoRA 파인튜닝
-# 카메라 키: "camera1" (up, index=1) + "camera2" (side, index=0)
+# ─── Model ────────────────────────────────────────────────────────────────────
+# base: chamborgir/smolvla_pickplace_20k, fine-tuned 30K steps on toothpaste_grasp (51 ep)
+# (train_expert_only=True, frozen vision encoder; no LoRA/PEFT -- see configs/train_config.json)
+# camera keys: "camera1" (up, index=1) + "camera2" (side, index=0)
 POLICY_PATH     = "outputs/train/toothpaste_from_20k/checkpoints/last/pretrained_model"
 NORM_STATS_PATH = "outputs/train/toothpaste_from_20k/checkpoints/last/pretrained_model"
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ─── 카메라 설정 ──────────────────────────────────────────────────────────────
-# 우리 학습 데이터 카메라 키: "camera1" + "camera2"
-CAMERA1_INDEX = 1   # 위에서 내려보는 카메라   → 모델 입력 "camera1"
-CAMERA2_INDEX = 0   # 측면/손목 카메라          → 모델 입력 "camera2"
+# ─── Cameras ─────────────────────────────────────────────────────────────────
+# training-data camera keys (after rename_map): "camera1" + "camera2"
+CAMERA1_INDEX = 1   # dataset key "up"    -> model input "camera1"
+CAMERA2_INDEX = 0   # dataset key "side"  -> model input "camera2"
 
-# 각 카메라 방향 보정 (처음은 False → 반대로 움직이면 True)
+# per-camera flip correction (start with False; set True if the image is mirrored)
 FLIP_CAM1_HORIZONTAL = False
 FLIP_CAM1_VERTICAL   = False
 FLIP_CAM2_HORIZONTAL = False
 FLIP_CAM2_VERTICAL   = False
 
-# ─── 그리퍼 보정 ─────────────────────────────────────────────────────────────
-# 우리 학습 데이터로 normalization이 맞춰져 있으므로 스케일 보정 불필요
+# ─── Gripper ────────────────────────────────────────────────────────────────
+# multiplier applied to the predicted gripper action before sending (1.2 in the demo run)
 GRIPPER_SCALE = 1.2
 # ─────────────────────────────────────────────────────────────────────────────
 
-ROBOT_PORT = "/dev/tty.usbmodem5AE60562841"
+ROBOT_PORT = "/dev/tty.usbmodemXXXXXXXXXXX"  # set to your follower arm's serial port
 ROBOT_ID = "my_awesome_follower_arm"
 TASK = "Grasp the toothpaste box and lift it up"
 N_EPISODES = 3
@@ -57,16 +58,16 @@ MOTOR_NAMES = [
     "gripper.pos",
 ]
 
-PREVIEW_W, PREVIEW_H = 640, 480  # 미리보기 창 각 카메라 크기
+PREVIEW_W, PREVIEW_H = 640, 480  # preview size per camera
 
-# ─── 녹화 설정 ──────────────────────────────────────────────────────────────
-RECORD_VIDEO = True          # False로 바꾸면 녹화 안 함
-RECORD_DIR   = "recordings"  # 저장 폴더 (~/lerobot/recordings/)
+# ─── Recording ──────────────────────────────────────────────────────────────
+RECORD_VIDEO = True          # set False to disable recording
+RECORD_DIR   = "recordings"  # output folder, relative to the working directory
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 def flip_image(img: np.ndarray, flip_h: bool, flip_v: bool) -> np.ndarray:
-    """설정에 따라 이미지 반전 (RGB numpy HxWxC)"""
+    """Flip an RGB HxWxC numpy image according to the flags."""
     if flip_h:
         img = img[:, ::-1, :].copy()
     if flip_v:
@@ -75,7 +76,7 @@ def flip_image(img: np.ndarray, flip_h: bool, flip_v: bool) -> np.ndarray:
 
 
 def make_frame(img_cam1, img_cam2, action_1d, step, elapsed):
-    """두 카메라 합성 프레임 생성 (BGR, 녹화 + 화면 공용)"""
+    """Build the side-by-side two-camera frame (BGR; used for display and recording)."""
     cam1 = cv2.resize(img_cam1, (PREVIEW_W, PREVIEW_H))
     cam2 = cv2.resize(img_cam2, (PREVIEW_W, PREVIEW_H))
 
@@ -104,35 +105,35 @@ def make_frame(img_cam1, img_cam2, action_1d, step, elapsed):
 
 def main():
     print("=" * 60)
-    print("SmolVLA 정책 로봇 실행  (카메라 0+1 동시 미리보기)")
+    print("SmolVLA policy on robot  (camera 0+1 live preview)")
     print("=" * 60)
 
-    # 1. 정책 로드
-    print(f"\n[1/3] 정책 로드 중: {POLICY_PATH}")
+    # 1. load policy
+    print(f"\n[1/3] loading policy: {POLICY_PATH}")
     from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
     from lerobot.policies.factory import make_pre_post_processors
 
     policy = SmolVLAPolicy.from_pretrained(POLICY_PATH)
     policy = policy.to(DEVICE)
     policy.eval()
-    print(f"  정책 로드 완료 (device={DEVICE})")
+    print(f"  policy loaded (device={DEVICE})")
 
-    print(f"\n  전처리/후처리 파이프라인 로드 중...")
+    print(f"\n  loading pre/post-processing pipeline...")
     preprocessor, postprocessor = make_pre_post_processors(
         policy.config,
         pretrained_path=NORM_STATS_PATH,
         preprocessor_overrides={"device_processor": {"device": DEVICE}},
         postprocessor_overrides={"device_processor": {"device": "cpu"}},
     )
-    print(f"  파이프라인 로드 완료 (norm stats: {NORM_STATS_PATH})")
+    print(f"  pipeline loaded (norm stats: {NORM_STATS_PATH})")
 
-    # 2. 로봇 + 카메라 연결
-    print(f"\n[2/3] 로봇 연결 중: {ROBOT_PORT}")
+    # 2. connect robot + cameras
+    print(f"\n[2/3] connecting robot: {ROBOT_PORT}")
     from lerobot.robots.so_follower.so_follower import SOFollower
     from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
     from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 
-    # 우리 학습 데이터 카메라 키: "camera1" + "camera2"
+    # training-data camera keys (after rename_map): "camera1" + "camera2"
     camera_cfg = {
         "camera1": OpenCVCameraConfig(
             index_or_path=CAMERA1_INDEX,
@@ -156,18 +157,18 @@ def main():
     )
     robot = SOFollower(robot_cfg)
     robot.connect()
-    print(f"  로봇 연결 완료 (camera1=#{CAMERA1_INDEX}, camera2=#{CAMERA2_INDEX})")
+    print(f"  robot connected (camera1=#{CAMERA1_INDEX}, camera2=#{CAMERA2_INDEX})")
 
-    # 3. 추론 루프
-    print(f"\n[3/3] 추론 시작  (미리보기 창 → q 키로 종료)")
+    # 3. inference loop
+    print(f"\n[3/3] starting inference  (press q in the preview window to stop)")
     device = torch.device(DEVICE)
     blank  = np.zeros((PREVIEW_H, PREVIEW_W, 3), dtype=np.uint8)
 
-    # 녹화 폴더 생성
+    # create recording folder
     if RECORD_VIDEO:
         os.makedirs(RECORD_DIR, exist_ok=True)
 
-    # 영상 크기: 두 카메라 나란히
+    # video size: two cameras side by side
     video_w = PREVIEW_W * 2
     video_h = PREVIEW_H
     fourcc  = cv2.VideoWriter_fourcc(*"mp4v")
@@ -175,18 +176,18 @@ def main():
     try:
         for ep in range(N_EPISODES):
             print(f"\n{'='*60}")
-            print(f"에피소드 {ep+1}/{N_EPISODES}: {TASK}")
-            print("  3초 후 시작... (Ctrl+C 또는 q 키로 중단)")
+            print(f"episode {ep+1}/{N_EPISODES}: {TASK}")
+            print("  starting in 3 s... (Ctrl+C or q to abort)")
 
-            # 에피소드별 VideoWriter 생성
+            # one VideoWriter per episode
             writer = None
             if RECORD_VIDEO:
                 ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 video_path = os.path.join(RECORD_DIR, f"ep{ep+1:02d}_{ts}.mp4")
                 writer = cv2.VideoWriter(video_path, fourcc, FPS, (video_w, video_h))
-                print(f"  녹화 시작: {video_path}")
+                print(f"  recording: {video_path}")
 
-            # 3초 카운트다운 미리보기
+            # 3 s countdown preview
             for countdown in range(3, 0, -1):
                 for _ in range(FPS):
                     obs_pre = robot.get_observation()
@@ -197,7 +198,7 @@ def main():
                     cv2.putText(c1_bgr, f"START IN {countdown}s", (160, 240),
                                 cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 255), 4)
                     frame = np.hstack([c1_bgr, c2_bgr])
-                    cv2.imshow("SmolVLA Live (q: 종료)", frame)
+                    cv2.imshow("SmolVLA Live (q: quit)", frame)
                     if writer:
                         writer.write(frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -241,14 +242,14 @@ def main():
                     action_tensor = postprocessor(action_tensor)
 
                 action_1d = action_tensor.squeeze(0).cpu().numpy()
-                # 그리퍼(마지막 joint) 스케일 보정: svla max 33° → 우리 로봇 max 57°
+                # gripper (last joint) scale correction (original note: base-policy max ~33 deg vs this robot max ~57 deg)
                 action_1d[-1] = action_1d[-1] * GRIPPER_SCALE
                 robot_action = {name: float(action_1d[i]) for i, name in enumerate(MOTOR_NAMES)}
                 robot.send_action(robot_action)
 
                 elapsed = time.time() - start_time
                 frame = make_frame(img_c1, img_c2, action_1d, step, elapsed)
-                cv2.imshow("SmolVLA Live (q: 종료)", frame)
+                cv2.imshow("SmolVLA Live (q: quit)", frame)
                 if writer:
                     writer.write(frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -264,21 +265,21 @@ def main():
 
             if writer:
                 writer.release()
-                print(f"  녹화 저장 완료: {video_path}")
+                print(f"  recording saved: {video_path}")
 
-            print(f"  에피소드 {ep+1} 완료 ({step} steps)")
+            print(f"  episode {ep+1} done ({step} steps)")
             if ep < N_EPISODES - 1:
-                print("  다음 에피소드까지 5초 대기...")
+                print("  waiting 5 s before next episode...")
                 time.sleep(5)
 
     except KeyboardInterrupt:
-        print("\n중단됨")
+        print("\ninterrupted")
     finally:
         if writer:
             writer.release()
         robot.disconnect()
         cv2.destroyAllWindows()
-        print("로봇/카메라 연결 해제 완료")
+        print("robot/cameras disconnected")
 
 
 if __name__ == "__main__":

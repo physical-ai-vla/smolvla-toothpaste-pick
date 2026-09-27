@@ -1,5 +1,6 @@
 """
-ep8~14 구간만 up/side 교체
+Swap the up/side camera streams for episodes 8-14 only
+(the camera cables were swapped while those episodes were recorded).
 """
 import os, glob, subprocess, tempfile, shutil
 import pyarrow.parquet as pq
@@ -31,12 +32,12 @@ def main():
         sf = d["videos/observation.images.side/from_timestamp"][i]
         sd = d["videos/observation.images.side/to_timestamp"][i] - sf
 
-        print(f"  ep{ep_idx:02d} 추출 중...", end="\r", flush=True)
+        print(f"  ep{ep_idx:02d} extracting...", end="\r", flush=True)
         clip_a = os.path.join(tmp_dir, f"a_{i:03d}.mp4")
         clip_b = os.path.join(tmp_dir, f"b_{i:03d}.mp4")
 
         if SWAP_START <= ep_idx <= SWAP_END:
-            # swap: side→up슬롯, up→side슬롯
+            # swap: side -> up slot, up -> side slot
             print(f"  ep{ep_idx:02d} SWAP", flush=True)
             _cut(side_src, sf, sd, clip_a)
             _cut(up_src,   uf, ud, clip_b)
@@ -47,7 +48,7 @@ def main():
         up_clips.append(clip_a)
         side_clips.append(clip_b)
 
-    print(f"\n추출 완료, 합치는 중...")
+    print(f"\nExtraction done, concatenating...")
 
     for cam, clips in [("observation.images.up", up_clips),
                        ("observation.images.side", side_clips)]:
@@ -55,9 +56,9 @@ def main():
         tmp_out = out + ".new.mp4"
         _concat(clips, tmp_out)
         os.replace(tmp_out, out)
-        print(f"  {cam} 완료")
+        print(f"  {cam} done")
 
-    # 타임스탬프 재계산
+    # recompute timestamps
     rows = {k: list(v) for k, v in d.items()}
     up_ts = side_ts = 0.0
     for i in range(n):
@@ -82,7 +83,7 @@ def main():
 
     pq.write_table(pa.table({k: pa.array(v) for k, v in rows.items()}), ep_file)
     shutil.rmtree(tmp_dir)
-    print("\n완료! view_episodes.py로 확인하세요.")
+    print("\nDone. Check the result with view_episodes.py.")
 
 
 def _cut(src, t_from, dur, out):

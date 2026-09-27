@@ -13,7 +13,7 @@ Thumbs.db
 .idea/
 *.swp
 
-# 학습 산출물 / 데이터셋 — repo에 안 올림
+# training outputs / datasets -- not committed
 checkpoints/
 outputs/
 data/
@@ -23,7 +23,7 @@ datasets/
 *.pt
 *.pth
 
-# 영상/대용량 — 단, inference_results/ 의 데모 영상은 예외
+# videos / large files -- except the demo media in inference_results/
 *.mp4
 *.avi
 *.mov
@@ -33,6 +33,6 @@ datasets/
 !inference_results/**/*.mp4
 !inference_results/**/*.gif
 
-# 로컬 환경
+# local environment
 .env
 .env.local

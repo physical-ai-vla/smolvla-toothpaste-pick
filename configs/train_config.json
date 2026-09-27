@@ -1,7 +1,7 @@
 {
     "dataset": {
         "repo_id": "local/toothpaste_grasp",
-        "root": "/DATA/jeonghwanlee/lerobot/toothpaste_grasp",
+        "root": "<DATA_ROOT>/toothpaste_grasp",
         "episodes": null,
         "image_transforms": {
             "enable": false,
@@ -181,7 +181,7 @@
         "compile_model": false,
         "compile_mode": "max-autotune"
     },
-    "output_dir": "/DATA/jeonghwanlee/lerobot/outputs/train/toothpaste_from_20k",
+    "output_dir": "outputs/train/toothpaste_from_20k",
     "job_name": "smolvla",
     "resume": false,
     "seed": 1000,
